@@ -1,4 +1,4 @@
-// === Zombie Domo: Retro FPS w/ PNG Gun, PNG Zombie, Moaning, CRT, Headshots, Radar, Moon, Trees ===
+// === Zombie Domo: Retro FPS v3: PNG Crosshair, Score Popups, Loud Headshots ===
 
 // --- SOUND EFFECTS ---
 let gunSound = new Audio('shotgun.mp3');
@@ -20,22 +20,40 @@ function playMoanCanvasPosition(z, dist, pan) {
     sfx.play();
   }
 }
+let headshotDing = new Audio('headshot.mp3');
+headshotDing.volume = 1.0; // MAX volume!
+function playHeadshotSound() {
+  let sfx = headshotDing.cloneNode();
+  sfx.volume = 1.0;
+  sfx.play();
+}
 
 // --- LOAD PNG ASSETS ---
 const gunImg = new Image(); gunImg.src = 'gun.png';
 const zombieImg = new Image(); zombieImg.src = 'zombie.png';
 const treeImg = new Image(); treeImg.src = 'tree.png';
+const bossImg = new Image(); bossImg.src = 'zombie.png'; // Re-use zombie.png or use boss.png
+const crosshairImg = new Image(); crosshairImg.src = 'crosshair.png';
 
 // --- GLOBALS ---
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 canvas.width = 800;
 canvas.height = 600;
+ctx.imageSmoothingEnabled = false;
 
 const FIELD_SIZE = 11 * 64;
 const NEON = '#00ffe7', DEEP_BG = '#181626', RETRO_PURPLE = '#a98fff', RETRO_RED = '#ff3158';
 const RETRO_GREEN = '#43ff5a', SCANLINE_COLOR = 'rgba(0,0,0,0.12)';
-let crosshairOnTarget = false, crosshairPulse = 0;
+let crosshairOnTarget = false, crosshairPulse = 0, crosshairIsOnBoss = false;
+
+// --- Local High Score ---
+function getHighScore() {
+  return Number(localStorage.getItem('zombiedomo_highscore') || "0");
+}
+function setHighScore(val) {
+  localStorage.setItem('zombiedomo_highscore', String(val));
+}
 
 // --- PLAYER STATE ---
 function resetPlayer() {
@@ -43,31 +61,34 @@ function resetPlayer() {
     x: canvas.width / 2,
     y: canvas.height / 2,
     dir: 0,
+    look: 0,
     fov: Math.PI/3,
     speed: 1.4,
     rotSpeed: 0.035,
     alive: true
   };
 }
-
 let player = resetPlayer();
 let keys = {}, zombies = [], score = 0, spawnCd = 0, trees = [];
 let hitFlash = 0, pointerLocked = false, lastShootTime = 0;
-let gameState = 'playing', wave = 1, zombiesPerWave = 12; // more zombies default
+let gameState = 'playing', wave = 1, zombiesPerWave = 12;
 let splatAlpha = 0, splatScale = 1;
+let highScore = getHighScore();
+let boss = null;
+const FINAL_WAVE = 5;
+let popups = [];
 
 // --- TREE GENERATION ---
 function placeTrees(num = 13) {
   trees = [];
   for (let i = 0; i < num; i++) {
     let angle = Math.random() * Math.PI * 2;
-    // Further distance and random elevation ("raise")
-    let dist = 340 + Math.random() * 480; // Spread trees further out
-    let raise = 90 + Math.random() * 100; // Higher "rise" for distant feel
+    let dist = 340 + Math.random() * 480;
+    let raise = 90 + Math.random() * 100;
     trees.push({
       x: player.x + Math.cos(angle) * dist + (Math.random() - 0.5) * 80,
       y: player.y + Math.sin(angle) * dist + (Math.random() - 0.5) * 80,
-      scale: (2.2 + Math.random() * 1.0) * 0.95,    // 5% smaller trees
+      scale: (2.2 + Math.random() * 1.0) * 0.95,
       raise: raise
     });
   }
@@ -93,9 +114,12 @@ function updatePointerLockState() {
 document.addEventListener('pointerlockchange', updatePointerLockState, false);
 document.addEventListener('mozpointerlockchange', updatePointerLockState, false);
 
+// INVERTED MOUSE!
 document.addEventListener('mousemove', function(e) {
   if (player.alive && gameState === 'playing' && pointerLocked) {
     player.dir += e.movementX * 0.0025;
+    player.look += e.movementY * 0.22; // inverted
+    player.look = Math.max(-160, Math.min(160, player.look));
   }
 });
 window.addEventListener('keydown', e => {
@@ -107,31 +131,90 @@ window.addEventListener('keydown', e => {
 window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
 canvas.addEventListener('mousedown', e => { if (player.alive && e.button === 0) shoot(); });
 
-// --- GAME LOOP ---
+// --- SHOOT FUNCTION WITH HEADSHOTS, POPUPS, BOSS ---
 function shoot() {
   if (!player.alive || gameState !== 'playing') return;
   let now = Date.now();
   if (now - lastShootTime < 150) return;
   lastShootTime = now;
   playGunSound();
-  let best = null, bestD = Infinity, cx = canvas.width / 2, tol = 38;
-  for (let z of zombies) {
-    if (z.dead) continue;
-    let dx = z.x - player.x, dy = z.y - player.y, d = Math.hypot(dx, dy);
+  let cx = canvas.width / 2;
+  let cy = canvas.height / 2 + player.look;
+  let best = null, bestD = Infinity, headshot = false, hitX = 0, hitY = 0;
+  for (let z of zombies.concat(boss ? [boss] : [])) {
+    if (!z || z.dead) continue;
+    let dx = z.x - player.x, dy = z.y - player.y, dist = Math.hypot(dx, dy);
     let ang = normalizeAngle(Math.atan2(dy, dx) - player.dir);
     let sx = (0.5 + ang / player.fov) * canvas.width;
-    if (Math.abs(sx - cx) < tol && d < bestD) { best = z; bestD = d; }
+    let size = z.isBoss ? z.size : Math.min(4000 / (dist + 0.01), 950) * 1.2;
+    let sy = canvas.height/2 + size/2 - size;
+    if (Math.abs(sx - cx) < size * 0.23 && Math.abs(cy - (sy + size * 0.54)) < size * 0.53 && dist < bestD) {
+      if (cy < sy + size * 0.29) headshot = true;
+      best = z; bestD = dist;
+      hitX = sx;
+      hitY = cy;
+    }
   }
   if (best) {
-    best.dead = true;
-    best.splat = 18;
-    score++;
+    if (best.isBoss) {
+      let damage = headshot ? 2 : 1;
+      best.hp -= damage;
+      if (headshot) {
+        score += 10;
+        best.headshotTime = performance.now();
+        playHeadshotSound();
+        popups.push({msg: 'HEADSHOT!', x: hitX, y: hitY, t: performance.now(), color: '#fff22a'});
+        popups.push({msg: '+10', x: hitX, y: hitY+32, t: performance.now(), color: '#fff'});
+      } else {
+        score += 2;
+        popups.push({msg: '+2', x: hitX, y: hitY+28, t: performance.now(), color: '#fff'});
+      }
+      if (best.hp <= 0) {
+        best.dead = true;
+        best.splat = 30;
+        score += 50;
+        popups.push({msg: 'BOSS DOWN!', x: hitX, y: hitY-32, t: performance.now(), color: '#fff22a'});
+        popups.push({msg: '+50', x: hitX, y: hitY, t: performance.now(), color: '#fff'});
+      }
+    } else {
+      best.dead = true;
+      best.splat = headshot ? 24 : 18;
+      if (headshot) {
+        score += 5;
+        best.headshotTime = performance.now();
+        playHeadshotSound();
+        popups.push({msg: 'HEADSHOT!', x: hitX, y: hitY, t: performance.now(), color: '#fff22a'});
+        popups.push({msg: '+5', x: hitX, y: hitY+28, t: performance.now(), color: '#fff'});
+      } else {
+        score++;
+        popups.push({msg: '+1', x: hitX, y: hitY+28, t: performance.now(), color: '#fff'});
+      }
+    }
   }
 }
 
+// --- SCORE/HEADSHOT POPUPS ---
+function drawPopups() {
+  let now = performance.now();
+  for (let i = popups.length - 1; i >= 0; i--) {
+    let p = popups[i];
+    let life = now - p.t;
+    if (life > 820) { popups.splice(i,1); continue; }
+    ctx.save();
+    ctx.globalAlpha = 1 - (life / 820);
+    ctx.font = /HEADSHOT|BOSS DOWN/i.test(p.msg) ? 'bold 34px monospace' : 'bold 24px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = p.color || '#fff';
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = /HEADSHOT|BOSS DOWN/i.test(p.msg) ? 18 : 7;
+    ctx.fillText(p.msg, p.x, p.y - (life/25));
+    ctx.restore();
+  }
+}
+
+// --- UPDATE & GAME LOOP ---
 function update() {
   if (gameState !== 'playing') return;
-
   if (keys['arrowleft']) player.dir -= player.rotSpeed;
   if (keys['arrowright']) player.dir += player.rotSpeed;
   let vx = 0, vy = 0;
@@ -139,47 +222,53 @@ function update() {
   if (keys['s']) { vx -= Math.cos(player.dir) * player.speed; vy -= Math.sin(player.dir) * player.speed; }
   if (keys['a']) { vx += Math.cos(player.dir - Math.PI/2) * player.speed; vy += Math.sin(player.dir - Math.PI/2) * player.speed; }
   if (keys['d']) { vx += Math.cos(player.dir + Math.PI/2) * player.speed; vy += Math.sin(player.dir + Math.PI/2) * player.speed; }
-  player.x += vx;
-  player.y += vy;
-
-  // Keep player roughly in the field bounds
+  player.x += vx; player.y += vy;
   player.x = Math.max(64, Math.min(FIELD_SIZE-64, player.x));
   player.y = Math.max(64, Math.min(FIELD_SIZE-64, player.y));
 
-  if (zombies.length < zombiesPerWave && spawnCd <= 0) {
+  // Spawn zombies, then boss if needed
+  if (!boss && wave === FINAL_WAVE && zombies.length === 0) {
+    spawnBoss();
+  } else if (zombies.length < zombiesPerWave && spawnCd <= 0) {
     spawnZombie();
     spawnCd = 120 + Math.random()*60;
   }
   spawnCd--;
-
-  for (let z of zombies) {
-    if (!z.dead) {
-      let dx = player.x - z.x, dy = player.y - z.y, dist = Math.hypot(dx, dy);
-      if (dist > 26) {
-        let mx = (dx/dist) * z.speed, my = (dy/dist) * z.speed;
-        z.x += mx * 0.82; // slow zombies by 18%
-        z.y += my * 0.82;
-      }
-      let ang = normalizeAngle(Math.atan2(dy, dx) - player.dir);
-      if (Math.abs(ang) < player.fov / 2 && dist < 420) {
-        let screenPos = 0.5 + ang / player.fov;
-        let pan = Math.max(-1, Math.min(1, (screenPos - 0.5) * 2));
-        playMoanCanvasPosition(z, dist, pan);
-      }
-      if (dist < 26 && player.alive) {
-        player.alive = false;
-        gameState = 'dead';
-        hitFlash = 18;
-        splatAlpha = 1;
-        splatScale = 1;
-      }
+  for (let z of zombies.concat(boss ? [boss] : [])) {
+    if (!z || z.dead) continue;
+    let dx = player.x - z.x, dy = player.y - z.y, dist = Math.hypot(dx, dy);
+    if (dist > 26) {
+      let mx = (dx/dist) * z.speed, my = (dy/dist) * z.speed;
+      z.x += mx * 0.82;
+      z.y += my * 0.82;
+    }
+    let ang = normalizeAngle(Math.atan2(dy, dx) - player.dir);
+    if (Math.abs(ang) < player.fov / 2 && dist < 420) {
+      let screenPos = 0.5 + ang / player.fov;
+      let pan = Math.max(-1, Math.min(1, (screenPos - 0.5) * 2));
+      playMoanCanvasPosition(z, dist, pan);
+    }
+    if (dist < 26 && player.alive) {
+      player.alive = false;
+      gameState = 'dead';
+      hitFlash = 18;
+      splatAlpha = 1;
+      splatScale = 1;
     }
     if (z.splat > 0) z.splat--;
   }
 
-  if (gameState === 'playing' && zombies.length === zombiesPerWave && zombies.every(z => z.dead)) {
+  // Check wave clear (including boss)
+  let allZombiesDead = zombies.every(z => z.dead) && (!boss || boss.dead);
+  if (gameState === 'playing' && zombies.length === zombiesPerWave && allZombiesDead) {
     setTimeout(() => {
-      if (confirm(`Wave ${wave} cleared!\nContinue to next wave?`)) nextWave();
+      if (wave === FINAL_WAVE) {
+        if (score > highScore) setHighScore(score);
+        alert("YOU WIN! Final Score: " + score + "\nHigh Score: " + getHighScore());
+        restartGame();
+      } else if (confirm(`Wave ${wave} cleared!\nContinue to next wave?`)) {
+        nextWave();
+      }
     }, 400);
     gameState = 'waiting';
   }
@@ -187,38 +276,17 @@ function update() {
   if (!player.alive && splatAlpha > 0) {
     splatAlpha *= 0.93;
     splatScale += 0.02;
+    if (score > highScore) setHighScore(score);
   }
 }
 
+// --- RENDER LOOP ---
 function render() {
-  // Night sky and ground
-  ctx.fillStyle = DEEP_BG;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#222';
-  ctx.fillRect(0, canvas.height/2, canvas.width, canvas.height/2);
-  ctx.fillStyle = '#111';
-  ctx.fillRect(0, 0, canvas.width, canvas.height/2);
+  ctx.fillStyle = DEEP_BG; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#222'; ctx.fillRect(0, canvas.height/2, canvas.width, canvas.height/2);
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, canvas.width, canvas.height/2);
 
-// Removed moon by popular demand
-/*
-ctx.save();
-ctx.globalAlpha = 0.92;
-ctx.beginPath();
-ctx.arc(120, 84, 54, 0, 2*Math.PI);
-ctx.fillStyle = "#e8e9ff";
-ctx.shadowColor = "#cccfff";
-ctx.shadowBlur = 38;
-ctx.fill();
-ctx.shadowBlur = 0;
-ctx.beginPath();
-ctx.arc(138, 76, 18, 0, 2*Math.PI);
-ctx.fillStyle = "#e8e9ff33";
-ctx.fill();
-ctx.restore();
-*/
-
-
-  // Draw trees (big, random raise, further away)
+  // Draw trees
   if (treeImg.complete) {
     trees.slice().sort((a, b) => {
       let da = Math.hypot(a.x - player.x, a.y - player.y);
@@ -231,63 +299,94 @@ ctx.restore();
       if (Math.abs(ang) < player.fov * 0.82 && dist > 220 && dist < 980) {
         let screenX = (0.5 + ang / player.fov) * canvas.width;
         let size = Math.min(18000 / (dist + 0.01), 1080) * tree.scale * 2.2;
-        // LOWERED trees:
         let screenY = canvas.height/2 + size/2 - size - tree.raise/2;
         ctx.save();
         ctx.globalAlpha = Math.max(0.16, Math.min(0.98, 0.93 - dist/950));
-        ctx.drawImage(treeImg, screenX - size/2, screenY, size, size);
+        ctx.drawImage(treeImg, Math.round(screenX - size/2), Math.round(screenY), Math.round(size), Math.round(size));
         ctx.restore();
       }
     });
   }
 
-  // Draw zombies (bigger by 20%)
+  // Draw zombies
   for (let z of zombies) {
     if (!zombieImg.complete) continue;
     let dx = z.x - player.x, dy = z.y - player.y, dist = Math.hypot(dx, dy);
     let ang = normalizeAngle(Math.atan2(dy, dx) - player.dir);
     if (Math.abs(ang) > player.fov / 2) continue;
     let screenX = (0.5 + ang / player.fov) * canvas.width;
-    let size = Math.min(4000 / (dist + 0.01), 950) * 1.2; // 20% larger zombies
+    let size = Math.min(4000 / (dist + 0.01), 950) * 1.2;
     let screenY = canvas.height/2 + size/2 - size;
-    if (z.dead && z.splat > 0) {
+    if (!z.dead) {
+      ctx.drawImage(zombieImg, Math.round(screenX - size/2), Math.round(screenY), Math.round(size), Math.round(size));
+    }
+    // Headshot popup
+    if (z.headshotTime && performance.now() - z.headshotTime < 700) {
       ctx.save();
-      ctx.globalAlpha = z.splat / 18;
-      ctx.fillStyle = RETRO_RED;
-      ctx.beginPath();
-      ctx.arc(screenX, canvas.height/2 + size/2, size/2.2, 0, 2 * Math.PI);
-      ctx.fill();
+      ctx.font = 'bold 40px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#fff22a';
+      ctx.shadowColor = '#fffab0';
+      ctx.shadowBlur = 12;
+      ctx.globalAlpha = 1 - (performance.now() - z.headshotTime)/700;
+      let popupY = canvas.height/2 - 80 - ((performance.now() - z.headshotTime)/7);
+      ctx.fillText('HEADSHOT!', canvas.width/2, popupY);
       ctx.restore();
-    } else if (!z.dead) {
-      ctx.drawImage(zombieImg, screenX - size/2, screenY, size, size);
     }
   }
 
-  // Crosshair pulse (ONLY center pulse dot, removed border lines)
-  crosshairOnTarget = zombies.some(z => {
-    if (z.dead) return false;
-    let dx = z.x - player.x, dy = z.y - player.y, dist = Math.hypot(dx, dy);
+  // Draw boss
+  if (boss && !boss.dead && bossImg.complete) {
+    let dx = boss.x - player.x, dy = boss.y - player.y, dist = Math.hypot(dx, dy);
     let ang = normalizeAngle(Math.atan2(dy, dx) - player.dir);
-    let sx = (0.5 + ang / player.fov) * canvas.width;
-    return Math.abs(sx - canvas.width/2) < 24 && dist < 320;
-  });
-  crosshairPulse += crosshairOnTarget ? 0.25 : -0.12;
-  crosshairPulse = Math.max(0, Math.min(1, crosshairPulse));
+    if (Math.abs(ang) <= player.fov / 2) {
+      let screenX = (0.5 + ang / player.fov) * canvas.width;
+      let size = boss.size;
+      let screenY = canvas.height/2 + size/2 - size;
+      ctx.save();
+      ctx.globalAlpha = 0.98;
+      ctx.drawImage(bossImg, Math.round(screenX - size/2), Math.round(screenY), Math.round(size), Math.round(size));
+      // Boss HP bar
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(screenX-size/2, screenY-20, size, 14);
+      ctx.fillStyle = RETRO_RED;
+      ctx.fillRect(screenX-size/2+2, screenY-18, (size-4)*boss.hp/boss.maxhp, 10);
+      ctx.strokeStyle = '#000';
+      ctx.strokeRect(screenX-size/2, screenY-20, size, 14);
+      ctx.font = 'bold 16px monospace';
+      ctx.fillStyle = '#000';
+      ctx.fillText('BOSS', screenX, screenY-8);
+      ctx.restore();
+      // Headshot popup
+      if (boss.headshotTime && performance.now() - boss.headshotTime < 700) {
+        ctx.save();
+        ctx.font = 'bold 40px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#fff22a';
+        ctx.shadowColor = '#fffab0';
+        ctx.shadowBlur = 12;
+        ctx.globalAlpha = 1 - (performance.now() - boss.headshotTime)/700;
+        let popupY = canvas.height/2 - 140 - ((performance.now() - boss.headshotTime)/7);
+        ctx.fillText('HEADSHOT!', canvas.width/2, popupY);
+        ctx.restore();
+      }
+    }
+  }
 
-  // Draw crosshair dot only
-  const cx = canvas.width/2, cy = canvas.height/2;
-  ctx.save();
-  ctx.strokeStyle = crosshairOnTarget ? RETRO_GREEN : NEON;
-  ctx.lineWidth = crosshairOnTarget ? 3.2 : 2;
-  ctx.shadowColor = crosshairOnTarget ? RETRO_GREEN : NEON;
-  ctx.shadowBlur = crosshairOnTarget ? 12 : 6;
-  ctx.globalAlpha = 0.82;
-  ctx.beginPath();
-  ctx.arc(cx, cy, 4 + 8 * crosshairPulse, 0, 2 * Math.PI);
-  ctx.fillStyle = crosshairOnTarget ? RETRO_GREEN : NEON;
-  ctx.globalAlpha = 0.43 + 0.4 * crosshairPulse;
-  ctx.fill();
-  ctx.restore();
+  // Score and headshot popups (NEW)
+  drawPopups();
+
+  // --- Crosshair: PNG version ---
+  const cx = canvas.width/2, cy = canvas.height/2 + player.look;
+  let crosshairScale = crosshairOnTarget ? (0.62 + 0.13*crosshairPulse) : (1.0 + 0.16*crosshairPulse);
+  let size = 44 * crosshairScale;
+  if (crosshairImg.complete) {
+    ctx.save();
+    ctx.globalAlpha = 0.93;
+    ctx.drawImage(crosshairImg, cx - size/2, cy - size/2, size, size);
+    ctx.restore();
+  }
 
   // CRT scanlines
   ctx.save();
@@ -307,15 +406,16 @@ ctx.restore();
   ctx.fillStyle = '#fff';
   ctx.fillText(`SCORE: ${score}`, 24, 44);
   ctx.fillText(`WAVE: ${wave}`, 24, 78);
+  ctx.fillText(`HIGH: ${getHighScore()}`, 24, 112);
   ctx.shadowBlur = 0; ctx.restore();
 
   // Gun sprite
   if (gunImg.complete) {
     const scale = 0.38, gw = gunImg.width * scale, gh = gunImg.height * scale;
-    ctx.drawImage(gunImg, (canvas.width - gw) / 2, canvas.height - gh - 6, gw, gh);
+    ctx.drawImage(gunImg, Math.round((canvas.width - gw) / 2), Math.round(canvas.height - gh - 6), Math.round(gw), Math.round(gh));
   }
 
-  // Death splat
+  // Death splat (for fun, keeps original animation when you die)
   if (!player.alive && splatAlpha > 0.01) {
     ctx.save();
     ctx.globalAlpha = splatAlpha;
@@ -343,7 +443,9 @@ ctx.restore();
     ctx.shadowBlur = 0; ctx.font = 'bold 34px monospace'; ctx.fillStyle = '#fff';
     ctx.fillText('Score: '+score, canvas.width/2, canvas.height/2+30);
     ctx.font = 'bold 21px monospace';
-    ctx.fillText('Press [R] or Click to Restart', canvas.width/2, canvas.height/2+68);
+    ctx.fillText('High: '+getHighScore(), canvas.width/2, canvas.height/2+60);
+    ctx.font = 'bold 18px monospace';
+    ctx.fillText('Press [R] or Click to Restart', canvas.width/2, canvas.height/2+98);
   } else if (gameState === 'waiting') {
     ctx.globalAlpha = 0.92;
     ctx.shadowColor = RETRO_GREEN; ctx.shadowBlur = 19;
@@ -356,48 +458,37 @@ ctx.restore();
   ctx.restore();
 }
 
-// --- RADAR (Player always at center, world rotates) ---
+// --- RADAR ---
 function drawRadar() {
   const RADAR_SIZE = 120;
   const RADAR_RADIUS = RADAR_SIZE/2 - 8;
   const RADAR_CX = canvas.width - RADAR_SIZE/2 - 18;
   const RADAR_CY = RADAR_SIZE/2 + 18;
-  const radarZoom = 260; // How much area radar shows (bigger=zoom out)
-
-  // Radar background
+  const radarZoom = 260;
   ctx.save();
-  ctx.globalAlpha = 0.96;
+  ctx.globalAlpha = 0.92;
   ctx.beginPath();
   ctx.arc(RADAR_CX, RADAR_CY, RADAR_SIZE/2, 0, 2 * Math.PI);
   ctx.fillStyle = '#101014';
   ctx.fill();
-  ctx.strokeStyle = RETRO_PURPLE;
-  ctx.lineWidth = 3;
-  ctx.stroke();
-
-  // Draw zombies on radar
-  zombies.forEach(z => {
+  zombies.concat(boss ? [boss] : []).forEach(z => {
+    if (!z || z.dead) return;
     let relX = z.x - player.x, relY = z.y - player.y;
-    // Rotate world relative to player view:
     let rotX = relX * Math.cos(-player.dir) - relY * Math.sin(-player.dir);
     let rotY = relX * Math.sin(-player.dir) + relY * Math.cos(-player.dir);
-    // Scale to radar size
     let rx = RADAR_CX + (rotX / radarZoom) * RADAR_RADIUS;
     let ry = RADAR_CY + (rotY / radarZoom) * RADAR_RADIUS;
-    // Only draw if within radar circle
     if ((rx - RADAR_CX)**2 + (ry - RADAR_CY)**2 < RADAR_RADIUS**2 - 8) {
       ctx.beginPath();
-      ctx.arc(rx, ry, z.dead ? 4 : 7, 0, 2 * Math.PI);
-      ctx.fillStyle = z.dead ? RETRO_RED : RETRO_GREEN;
-      ctx.globalAlpha = z.dead ? 0.45 : 1.0;
+      ctx.arc(rx, ry, z.isBoss ? 12 : 7, 0, 2 * Math.PI);
+      ctx.fillStyle = z.isBoss ? '#fff' : RETRO_GREEN;
+      ctx.globalAlpha = 1.0;
       ctx.fill();
     }
   });
-
-  // Draw player (triangle) always at center
   ctx.save();
   ctx.translate(RADAR_CX, RADAR_CY);
-  ctx.rotate(0); // Point up
+  ctx.rotate(0);
   ctx.beginPath();
   ctx.moveTo(0, -12);
   ctx.lineTo(8, 10);
@@ -408,7 +499,6 @@ function drawRadar() {
   ctx.shadowBlur = 10;
   ctx.fill();
   ctx.restore();
-
   ctx.globalAlpha = 1.0;
   ctx.restore();
 }
@@ -427,14 +517,27 @@ function spawnZombie() {
     y: player.y + Math.sin(angle) * dist,
     dead: false,
     splat: 0,
-    speed: (0.16 + Math.random() * 0.12) * 0.82 // slower zombies
+    speed: (0.16 + Math.random() * 0.12) * 0.82
   });
 }
-
+function spawnBoss() {
+  boss = {
+    x: player.x + Math.cos(Math.random() * 2 * Math.PI) * 380,
+    y: player.y + Math.sin(Math.random() * 2 * Math.PI) * 380,
+    dead: false,
+    splat: 0,
+    size: 310,
+    speed: 0.09,
+    hp: 7,
+    maxhp: 7,
+    isBoss: true
+  };
+}
 function nextWave() {
   wave++;
-  zombiesPerWave += 2; // each wave, more zombies!
+  zombiesPerWave += 2;
   zombies = [];
+  boss = null;
   spawnCd = 0;
   gameState = 'playing';
   placeTrees(13 + Math.floor(Math.random()*7));
@@ -443,14 +546,16 @@ function restartGame() {
   player = resetPlayer();
   keys = {};
   zombies = [];
+  boss = null;
   score = 0;
   wave = 1;
-  zombiesPerWave = 12; // start w/ more zombies
+  zombiesPerWave = 12;
   spawnCd = 0;
   hitFlash = 0;
   splatAlpha = 0;
   splatScale = 1;
   gameState = 'playing';
+  popups = [];
   placeTrees(17);
   if (document.exitPointerLock) document.exitPointerLock();
 }
