@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Zombie Domo - 2.5D FPS</title>
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: #0a0818;
+    }
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+    }
+    canvas {
+      background: #232045;
+      outline: none;
+      display: block;
+      border: 8px solid #00ffe7;
+      box-shadow: 0 0 60px #00ffe7, 0 0 16px #000 inset;
+      image-rendering: pixelated;
+      margin: 0 auto;
+      transition: border-color 0.2s;
+    }
+    canvas:focus {
+      border-color: #43ff5a;
+      box-shadow: 0 0 60px #43ff5a, 0 0 16px #000 inset;
+    }
+    @media (max-width: 900px) {
+      canvas {
+        width: 98vw !important;
+        height: 55vw !important;
+        max-width: 100vw;
+        max-height: 60vh;
+      }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game" width="800" height="480" tabindex="1"></canvas>
+  <script src="game.js"></script>
+</body>
+</html>
