@@ -8,7 +8,6 @@ function playGunSound() {
   sfx.volume = gunSound.volume;
   sfx.play();
 }
-
 let moanSound = new Audio('moan.mp3');
 moanSound.volume = 0.45;
 function playMoanCanvasPosition(z, dist, pan) {
@@ -47,8 +46,22 @@ const MAP_W = map[0].length, MAP_H = map.length, TILE = 64;
 const NEON = '#00ffe7', DEEP_BG = '#181626', RETRO_PURPLE = '#a98fff', RETRO_RED = '#ff3158';
 const RETRO_GREEN = '#43ff5a', SCANLINE_COLOR = 'rgba(0,0,0,0.12)';
 
-let crosshairOnTarget = false;
-let crosshairPulse = 0;
+// --- TREE PLACEMENT FOR RADAR ---
+const TREE_COUNT = 8;
+let trees = [];
+function placeTrees() {
+  trees = [];
+  while (trees.length < TREE_COUNT) {
+    let x = Math.floor(Math.random() * MAP_W);
+    let y = Math.floor(Math.random() * MAP_H);
+    if (map[y][x] === 0 && !trees.some(t => t.x === x && t.y === y)) {
+      trees.push({x, y});
+    }
+  }
+}
+placeTrees();
+
+let crosshairOnTarget = false, crosshairPulse = 0;
 
 // --- PLAYER STATE ---
 function findSafePlayerSpawn() {
@@ -60,8 +73,17 @@ function findSafePlayerSpawn() {
 }
 function resetPlayer() {
   let s = findSafePlayerSpawn();
-  return {x: s.x * TILE, y: s.y * TILE, dir: 0, fov: Math.PI/3, speed: 2.5, rotSpeed: 0.045, alive: true};
+  return {
+    x: s.x * TILE,
+    y: s.y * TILE,
+    dir: 0,
+    fov: Math.PI/3,
+    speed: 1.4,
+    rotSpeed: 0.035,
+    alive: true
+  };
 }
+
 let player = resetPlayer();
 let keys = {}, zombies = [], score = 0, spawnCd = 0;
 let hitFlash = 0, pointerLocked = false, lastShootTime = 0;
@@ -119,7 +141,7 @@ function shoot() {
   }
   if (best) {
     best.dead = true;
-    best.splat = 14; // smaller splat for visibility
+    best.splat = 14;
     score++;
   }
 }
@@ -233,14 +255,11 @@ function render() {
   ctx.shadowColor = crosshairOnTarget ? RETRO_GREEN : NEON;
   ctx.shadowBlur = crosshairOnTarget ? 12 : 6;
   ctx.globalAlpha = 0.82;
-  // horizontal
   ctx.beginPath();
   ctx.moveTo(cx - 12, cy); ctx.lineTo(cx + 12, cy);
-  // vertical
   ctx.moveTo(cx, cy - 12); ctx.lineTo(cx, cy + 12);
   ctx.stroke();
   ctx.shadowBlur = 0;
-  // Neon dot
   ctx.beginPath();
   ctx.arc(cx, cy, 4 + 8 * crosshairPulse, 0, 2 * Math.PI);
   ctx.fillStyle = crosshairOnTarget ? RETRO_GREEN : NEON;
@@ -256,6 +275,8 @@ function render() {
     ctx.fillRect(0, y, canvas.width, 1);
   }
   ctx.restore();
+
+  drawRadar();
 
   // HUD
   ctx.save();
@@ -327,7 +348,13 @@ function spawnZombie() {
   const spawns = [[1,1],[10,1],[1,6],[10,6],[6,1],[6,6]];
   let safe = spawns.filter(([mx, my]) => Math.hypot((mx + 0.5)*TILE - player.x, (my + 0.5)*TILE - player.y) > TILE * 2);
   let [mx, my] = (safe.length ? safe : spawns)[Math.floor(Math.random() * (safe.length || spawns.length))];
-  zombies.push({ x: (mx + 0.5) * TILE, y: (my + 0.5) * TILE, dead: false, splat: 0, speed: 0.3 + Math.random() * 0.2 });
+  zombies.push({
+    x: (mx + 0.5) * TILE,
+    y: (my + 0.5) * TILE,
+    dead: false,
+    splat: 0,
+    speed: 0.16 + Math.random() * 0.12
+  });
 }
 function nextWave() {
   wave++;
@@ -335,6 +362,7 @@ function nextWave() {
   zombies = [];
   spawnCd = 0;
   gameState = 'playing';
+  placeTrees();
 }
 function restartGame() {
   player = resetPlayer();
@@ -348,7 +376,82 @@ function restartGame() {
   splatAlpha = 0;
   splatScale = 1;
   gameState = 'playing';
+  placeTrees();
   if (document.exitPointerLock) document.exitPointerLock();
+}
+function drawRadar() {
+  const RADAR_SIZE = 120;
+  const RADAR_X = canvas.width - RADAR_SIZE - 18;
+  const RADAR_Y = 18;
+  const scale = RADAR_SIZE / (MAP_W * TILE);
+
+  ctx.save();
+  ctx.globalAlpha = 0.94;
+  ctx.fillStyle = '#0b1024';
+  ctx.beginPath();
+  ctx.arc(RADAR_X + RADAR_SIZE/2, RADAR_Y + RADAR_SIZE/2, RADAR_SIZE/2, 0, 2 * Math.PI);
+  ctx.fill();
+
+  // --- MOON ---
+  ctx.save();
+  let moonX = RADAR_X + RADAR_SIZE/2;
+  let moonY = RADAR_Y + 20;
+  ctx.globalAlpha = 0.7;
+  ctx.beginPath();
+  ctx.arc(moonX, moonY, 15, 0, 2 * Math.PI);
+  ctx.fillStyle = '#fff8de';
+  ctx.shadowColor = '#f0eec0';
+  ctx.shadowBlur = 10;
+  ctx.fill();
+  ctx.globalAlpha = 1.0;
+  ctx.beginPath();
+  ctx.arc(moonX + 5, moonY, 13, 0, 2 * Math.PI);
+  ctx.fillStyle = '#0b1024';
+  ctx.fill();
+  ctx.restore();
+
+  // --- TREES ---
+  for (let tree of trees) {
+    let tx = RADAR_X + (tree.x + 0.5) * TILE * scale;
+    let ty = RADAR_Y + (tree.y + 0.5) * TILE * scale;
+    ctx.beginPath();
+    ctx.arc(tx, ty, 4, 0, 2 * Math.PI);
+    ctx.fillStyle = '#38ea67';
+    ctx.globalAlpha = 0.7;
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1.0;
+
+  // --- ZOMBIES ---
+  for (let z of zombies) {
+    let zx = RADAR_X + (z.x / TILE) * scale;
+    let zy = RADAR_Y + (z.y / TILE) * scale;
+    ctx.beginPath();
+    ctx.arc(zx, zy, z.dead ? 4 : 7, 0, 2 * Math.PI);
+    ctx.fillStyle = z.dead ? RETRO_RED : RETRO_GREEN;
+    ctx.globalAlpha = z.dead ? 0.4 : 1.0;
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1.0;
+
+  // --- PLAYER ---
+  let px = RADAR_X + (player.x / TILE) * scale;
+  let py = RADAR_Y + (player.y / TILE) * scale;
+  ctx.save();
+  ctx.translate(px, py);
+  ctx.rotate(player.dir);
+  ctx.beginPath();
+  ctx.moveTo(0, -8);
+  ctx.lineTo(6, 7);
+  ctx.lineTo(-6, 7);
+  ctx.closePath();
+  ctx.fillStyle = NEON;
+  ctx.shadowColor = RETRO_GREEN;
+  ctx.shadowBlur = 9;
+  ctx.fill();
+  ctx.restore();
+
+  ctx.restore();
 }
 
 // --- RUN LOOP ---
