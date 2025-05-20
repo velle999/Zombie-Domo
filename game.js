@@ -1,4 +1,4 @@
-// === Zombie Domo: Retro FPS w/ PNG Gun, PNG Zombie, Sliding Zombies, Moaning, CRT, Headshots ===
+// === Zombie Domo: Retro FPS w/ PNG Gun, PNG Zombie, Moaning, CRT, Headshots, Radar, Moon, Trees ===
 
 // --- SOUND EFFECTS ---
 let gunSound = new Audio('shotgun.mp3');
@@ -24,58 +24,24 @@ function playMoanCanvasPosition(z, dist, pan) {
 // --- LOAD PNG ASSETS ---
 const gunImg = new Image(); gunImg.src = 'gun.png';
 const zombieImg = new Image(); zombieImg.src = 'zombie.png';
+const treeImg = new Image(); treeImg.src = 'tree.png';
 
-// --- GLOBALS & MAP ---
+// --- GLOBALS ---
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 canvas.width = 800;
 canvas.height = 600;
 
-const map = [
-  [1,1,1,1,1,1,1,1,1,1,1,1],
-  [1,0,0,0,0,0,0,0,0,0,0,1],
-  [1,0,0,1,0,1,0,1,0,1,0,1],
-  [1,0,0,1,0,1,0,1,0,1,0,1],
-  [1,0,0,0,0,0,0,0,0,0,0,1],
-  [1,0,1,1,1,0,1,1,1,1,0,1],
-  [1,0,0,0,0,0,0,0,0,0,0,1],
-  [1,1,1,1,1,1,1,1,1,1,1,1]
-];
-const MAP_W = map[0].length, MAP_H = map.length, TILE = 64;
-
+const FIELD_SIZE = 11 * 64;
 const NEON = '#00ffe7', DEEP_BG = '#181626', RETRO_PURPLE = '#a98fff', RETRO_RED = '#ff3158';
 const RETRO_GREEN = '#43ff5a', SCANLINE_COLOR = 'rgba(0,0,0,0.12)';
-
-// --- TREE PLACEMENT FOR RADAR ---
-const TREE_COUNT = 8;
-let trees = [];
-function placeTrees() {
-  trees = [];
-  while (trees.length < TREE_COUNT) {
-    let x = Math.floor(Math.random() * MAP_W);
-    let y = Math.floor(Math.random() * MAP_H);
-    if (map[y][x] === 0 && !trees.some(t => t.x === x && t.y === y)) {
-      trees.push({x, y});
-    }
-  }
-}
-placeTrees();
-
 let crosshairOnTarget = false, crosshairPulse = 0;
 
 // --- PLAYER STATE ---
-function findSafePlayerSpawn() {
-  let empties = [];
-  for (let y = 1; y < MAP_H - 1; y++)
-    for (let x = 1; x < MAP_W - 1; x++)
-      if (map[y][x] === 0) empties.push({x: x + 0.5, y: y + 0.5});
-  return empties.length ? empties[Math.floor(Math.random()*empties.length)] : {x: 2.5, y: 2.5};
-}
 function resetPlayer() {
-  let s = findSafePlayerSpawn();
   return {
-    x: s.x * TILE,
-    y: s.y * TILE,
+    x: canvas.width / 2,
+    y: canvas.height / 2,
     dir: 0,
     fov: Math.PI/3,
     speed: 1.4,
@@ -85,12 +51,29 @@ function resetPlayer() {
 }
 
 let player = resetPlayer();
-let keys = {}, zombies = [], score = 0, spawnCd = 0;
+let keys = {}, zombies = [], score = 0, spawnCd = 0, trees = [];
 let hitFlash = 0, pointerLocked = false, lastShootTime = 0;
 let gameState = 'playing', wave = 1, zombiesPerWave = 5;
 let splatAlpha = 0, splatScale = 1;
 
-// --- POINTER LOCK & INPUT HANDLING ---
+// --- TREE GENERATION ---
+function placeTrees(num = 13) {
+  trees = [];
+  for (let i = 0; i < num; i++) {
+    let angle = Math.random() * Math.PI * 2;
+    // Further distance and random elevation ("raise")
+    let dist = 340 + Math.random() * 480; // Spread trees further out
+    let raise = 90 + Math.random() * 100; // Higher "rise" for distant feel
+    trees.push({
+      x: player.x + Math.cos(angle) * dist + (Math.random() - 0.5) * 80,
+      y: player.y + Math.sin(angle) * dist + (Math.random() - 0.5) * 80,
+      scale: 2.2 + Math.random() * 1.0,    // <<---- THICCCC TREES: 2.2x to 4.5x
+      raise: raise
+    });
+  }
+}
+
+// --- INPUT HANDLING ---
 canvas.tabIndex = 1;
 window.addEventListener('load', () => canvas.focus());
 canvas.addEventListener('click', () => {
@@ -131,7 +114,7 @@ function shoot() {
   if (now - lastShootTime < 150) return;
   lastShootTime = now;
   playGunSound();
-  let best = null, bestD = Infinity, cx = canvas.width / 2, tol = 20;
+  let best = null, bestD = Infinity, cx = canvas.width / 2, tol = 38;
   for (let z of zombies) {
     if (z.dead) continue;
     let dx = z.x - player.x, dy = z.y - player.y, d = Math.hypot(dx, dy);
@@ -141,7 +124,7 @@ function shoot() {
   }
   if (best) {
     best.dead = true;
-    best.splat = 14;
+    best.splat = 18;
     score++;
   }
 }
@@ -156,9 +139,12 @@ function update() {
   if (keys['s']) { vx -= Math.cos(player.dir) * player.speed; vy -= Math.sin(player.dir) * player.speed; }
   if (keys['a']) { vx += Math.cos(player.dir - Math.PI/2) * player.speed; vy += Math.sin(player.dir - Math.PI/2) * player.speed; }
   if (keys['d']) { vx += Math.cos(player.dir + Math.PI/2) * player.speed; vy += Math.sin(player.dir + Math.PI/2) * player.speed; }
-  let nx = player.x + vx, ny = player.y + vy;
-  if (!isWall(nx, player.y)) player.x = nx;
-  if (!isWall(player.x, ny)) player.y = ny;
+  player.x += vx;
+  player.y += vy;
+
+  // Keep player roughly in the field bounds
+  player.x = Math.max(64, Math.min(FIELD_SIZE-64, player.x));
+  player.y = Math.max(64, Math.min(FIELD_SIZE-64, player.y));
 
   if (zombies.length < zombiesPerWave && spawnCd <= 0) {
     spawnZombie();
@@ -169,10 +155,10 @@ function update() {
   for (let z of zombies) {
     if (!z.dead) {
       let dx = player.x - z.x, dy = player.y - z.y, dist = Math.hypot(dx, dy);
-      if (dist > 24) {
+      if (dist > 26) {
         let mx = (dx/dist) * z.speed, my = (dy/dist) * z.speed;
-        if (!isWall(z.x + mx, z.y)) z.x += mx;
-        if (!isWall(z.x, z.y + my)) z.y += my;
+        z.x += mx;
+        z.y += my;
       }
       let ang = normalizeAngle(Math.atan2(dy, dx) - player.dir);
       if (Math.abs(ang) < player.fov / 2 && dist < 420) {
@@ -180,7 +166,7 @@ function update() {
         let pan = Math.max(-1, Math.min(1, (screenPos - 0.5) * 2));
         playMoanCanvasPosition(z, dist, pan);
       }
-      if (dist < 24 && player.alive) {
+      if (dist < 26 && player.alive) {
         player.alive = false;
         gameState = 'dead';
         hitFlash = 18;
@@ -204,8 +190,8 @@ function update() {
   }
 }
 
-// --- DRAW ---
 function render() {
+  // Night sky and ground
   ctx.fillStyle = DEEP_BG;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = '#222';
@@ -213,22 +199,60 @@ function render() {
   ctx.fillStyle = '#111';
   ctx.fillRect(0, 0, canvas.width, canvas.height/2);
 
-  // Draw zombies
+  // Draw moon (LEFT SIDE now)
+  ctx.save();
+  ctx.globalAlpha = 0.92;
+  ctx.beginPath();
+  ctx.arc(120, 84, 54, 0, 2*Math.PI); // << moved to left, larger
+  ctx.fillStyle = "#e8e9ff";
+  ctx.shadowColor = "#cccfff";
+  ctx.shadowBlur = 38;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.beginPath();
+  ctx.arc(138, 76, 18, 0, 2*Math.PI);
+  ctx.fillStyle = "#e8e9ff33";
+  ctx.fill();
+  ctx.restore();
+
+  // Draw trees (big, random raise, further away)
+if (treeImg.complete) {
+  trees.slice().sort((a, b) => {
+    let da = Math.hypot(a.x - player.x, a.y - player.y);
+    let db = Math.hypot(b.x - player.x, b.y - player.y);
+    return db - da;
+  }).forEach(tree => {
+    let dx = tree.x - player.x, dy = tree.y - player.y;
+    let ang = normalizeAngle(Math.atan2(dy, dx) - player.dir);
+    let dist = Math.hypot(dx, dy);
+    if (Math.abs(ang) < player.fov * 0.82 && dist > 220 && dist < 980) {
+      let screenX = (0.5 + ang / player.fov) * canvas.width;
+      let size = Math.min(18000 / (dist + 0.01), 1080) * tree.scale * 2.2;
+      // LOWERED trees:
+      let screenY = canvas.height/2 + size/2 - size - tree.raise/2;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0.16, Math.min(0.98, 0.93 - dist/950));
+      ctx.drawImage(treeImg, screenX - size/2, screenY, size, size);
+      ctx.restore();
+    }
+  });
+}
+
+  // Draw zombies (bigger/"thicc" as requested)
   for (let z of zombies) {
     if (!zombieImg.complete) continue;
     let dx = z.x - player.x, dy = z.y - player.y, dist = Math.hypot(dx, dy);
     let ang = normalizeAngle(Math.atan2(dy, dx) - player.dir);
     if (Math.abs(ang) > player.fov / 2) continue;
     let screenX = (0.5 + ang / player.fov) * canvas.width;
-    let size = Math.min(2200 / (dist + 0.01), 120);
+    let size = Math.min(4000 / (dist + 0.01), 950); // Super THICC zombies
     let screenY = canvas.height/2 + size/2 - size;
-
     if (z.dead && z.splat > 0) {
       ctx.save();
-      ctx.globalAlpha = z.splat / 14;
+      ctx.globalAlpha = z.splat / 18;
       ctx.fillStyle = RETRO_RED;
       ctx.beginPath();
-      ctx.arc(screenX, canvas.height/2 + size/2, size/2.7, 0, 2 * Math.PI);
+      ctx.arc(screenX, canvas.height/2 + size/2, size/2.2, 0, 2 * Math.PI);
       ctx.fill();
       ctx.restore();
     } else if (!z.dead) {
@@ -242,7 +266,7 @@ function render() {
     let dx = z.x - player.x, dy = z.y - player.y, dist = Math.hypot(dx, dy);
     let ang = normalizeAngle(Math.atan2(dy, dx) - player.dir);
     let sx = (0.5 + ang / player.fov) * canvas.width;
-    return Math.abs(sx - canvas.width/2) < 18 && dist < 320;
+    return Math.abs(sx - canvas.width/2) < 24 && dist < 320;
   });
   crosshairPulse += crosshairOnTarget ? 0.25 : -0.12;
   crosshairPulse = Math.max(0, Math.min(1, crosshairPulse));
@@ -289,7 +313,7 @@ function render() {
 
   // Gun sprite
   if (gunImg.complete) {
-    const scale = 0.34, gw = gunImg.width * scale, gh = gunImg.height * scale;
+    const scale = 0.38, gw = gunImg.width * scale, gh = gunImg.height * scale;
     ctx.drawImage(gunImg, (canvas.width - gw) / 2, canvas.height - gh - 6, gw, gh);
   }
 
@@ -334,35 +358,94 @@ function render() {
   ctx.restore();
 }
 
+// --- RADAR (Player always at center, world rotates) ---
+function drawRadar() {
+  const RADAR_SIZE = 120;
+  const RADAR_RADIUS = RADAR_SIZE/2 - 8;
+  const RADAR_CX = canvas.width - RADAR_SIZE/2 - 18;
+  const RADAR_CY = RADAR_SIZE/2 + 18;
+  const radarZoom = 260; // How much area radar shows (bigger=zoom out)
+
+  // Radar background
+  ctx.save();
+  ctx.globalAlpha = 0.96;
+  ctx.beginPath();
+  ctx.arc(RADAR_CX, RADAR_CY, RADAR_SIZE/2, 0, 2 * Math.PI);
+  ctx.fillStyle = '#101014';
+  ctx.fill();
+  ctx.strokeStyle = RETRO_PURPLE;
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  // Draw moon in radar (cute touch)
+  ctx.beginPath();
+  ctx.arc(RADAR_CX-26, RADAR_CY-24, 14, 0, 2 * Math.PI); // left in radar too
+  ctx.fillStyle = "#e8e9ff88";
+  ctx.fill();
+
+  // Draw zombies on radar
+  zombies.forEach(z => {
+    let relX = z.x - player.x, relY = z.y - player.y;
+    // Rotate world relative to player view:
+    let rotX = relX * Math.cos(-player.dir) - relY * Math.sin(-player.dir);
+    let rotY = relX * Math.sin(-player.dir) + relY * Math.cos(-player.dir);
+    // Scale to radar size
+    let rx = RADAR_CX + (rotX / radarZoom) * RADAR_RADIUS;
+    let ry = RADAR_CY + (rotY / radarZoom) * RADAR_RADIUS;
+    // Only draw if within radar circle
+    if ((rx - RADAR_CX)**2 + (ry - RADAR_CY)**2 < RADAR_RADIUS**2 - 8) {
+      ctx.beginPath();
+      ctx.arc(rx, ry, z.dead ? 4 : 7, 0, 2 * Math.PI);
+      ctx.fillStyle = z.dead ? RETRO_RED : RETRO_GREEN;
+      ctx.globalAlpha = z.dead ? 0.45 : 1.0;
+      ctx.fill();
+    }
+  });
+
+  // Draw player (triangle) always at center
+  ctx.save();
+  ctx.translate(RADAR_CX, RADAR_CY);
+  ctx.rotate(0); // Point up
+  ctx.beginPath();
+  ctx.moveTo(0, -12);
+  ctx.lineTo(8, 10);
+  ctx.lineTo(-8, 10);
+  ctx.closePath();
+  ctx.fillStyle = NEON;
+  ctx.shadowColor = RETRO_GREEN;
+  ctx.shadowBlur = 10;
+  ctx.fill();
+  ctx.restore();
+
+  ctx.globalAlpha = 1.0;
+  ctx.restore();
+}
+
 // --- HELPERS ---
 function normalizeAngle(a) {
   while (a < -Math.PI) a += 2 * Math.PI;
   while (a > Math.PI) a -= 2 * Math.PI;
   return a;
 }
-function isWall(x, y) {
-  let mx = Math.floor(x / TILE), my = Math.floor(y / TILE);
-  return map[my] && map[my][mx] === 1;
-}
 function spawnZombie() {
-  const spawns = [[1,1],[10,1],[1,6],[10,6],[6,1],[6,6]];
-  let safe = spawns.filter(([mx, my]) => Math.hypot((mx + 0.5)*TILE - player.x, (my + 0.5)*TILE - player.y) > TILE * 2);
-  let [mx, my] = (safe.length ? safe : spawns)[Math.floor(Math.random() * (safe.length || spawns.length))];
+  let angle = Math.random() * Math.PI * 2;
+  let dist = 260 + Math.random() * 180;
   zombies.push({
-    x: (mx + 0.5) * TILE,
-    y: (my + 0.5) * TILE,
+    x: player.x + Math.cos(angle) * dist,
+    y: player.y + Math.sin(angle) * dist,
     dead: false,
     splat: 0,
     speed: 0.16 + Math.random() * 0.12
   });
 }
+
 function nextWave() {
   wave++;
   zombiesPerWave += 2;
   zombies = [];
   spawnCd = 0;
   gameState = 'playing';
-  placeTrees();
+  placeTrees(13 + Math.floor(Math.random()*7));
 }
 function restartGame() {
   player = resetPlayer();
@@ -376,83 +459,12 @@ function restartGame() {
   splatAlpha = 0;
   splatScale = 1;
   gameState = 'playing';
-  placeTrees();
+  placeTrees(17);
   if (document.exitPointerLock) document.exitPointerLock();
 }
-function drawRadar() {
-  const RADAR_SIZE = 120;
-  const RADAR_X = canvas.width - RADAR_SIZE - 18;
-  const RADAR_Y = 18;
-  const scale = RADAR_SIZE / (MAP_W * TILE);
 
-  ctx.save();
-  ctx.globalAlpha = 0.94;
-  ctx.fillStyle = '#0b1024';
-  ctx.beginPath();
-  ctx.arc(RADAR_X + RADAR_SIZE/2, RADAR_Y + RADAR_SIZE/2, RADAR_SIZE/2, 0, 2 * Math.PI);
-  ctx.fill();
-
-  // --- MOON ---
-  ctx.save();
-  let moonX = RADAR_X + RADAR_SIZE/2;
-  let moonY = RADAR_Y + 20;
-  ctx.globalAlpha = 0.7;
-  ctx.beginPath();
-  ctx.arc(moonX, moonY, 15, 0, 2 * Math.PI);
-  ctx.fillStyle = '#fff8de';
-  ctx.shadowColor = '#f0eec0';
-  ctx.shadowBlur = 10;
-  ctx.fill();
-  ctx.globalAlpha = 1.0;
-  ctx.beginPath();
-  ctx.arc(moonX + 5, moonY, 13, 0, 2 * Math.PI);
-  ctx.fillStyle = '#0b1024';
-  ctx.fill();
-  ctx.restore();
-
-  // --- TREES ---
-  for (let tree of trees) {
-    let tx = RADAR_X + (tree.x + 0.5) * TILE * scale;
-    let ty = RADAR_Y + (tree.y + 0.5) * TILE * scale;
-    ctx.beginPath();
-    ctx.arc(tx, ty, 4, 0, 2 * Math.PI);
-    ctx.fillStyle = '#38ea67';
-    ctx.globalAlpha = 0.7;
-    ctx.fill();
-  }
-  ctx.globalAlpha = 1.0;
-
-  // --- ZOMBIES ---
-  for (let z of zombies) {
-    let zx = RADAR_X + (z.x / TILE) * scale;
-    let zy = RADAR_Y + (z.y / TILE) * scale;
-    ctx.beginPath();
-    ctx.arc(zx, zy, z.dead ? 4 : 7, 0, 2 * Math.PI);
-    ctx.fillStyle = z.dead ? RETRO_RED : RETRO_GREEN;
-    ctx.globalAlpha = z.dead ? 0.4 : 1.0;
-    ctx.fill();
-  }
-  ctx.globalAlpha = 1.0;
-
-  // --- PLAYER ---
-  let px = RADAR_X + (player.x / TILE) * scale;
-  let py = RADAR_Y + (player.y / TILE) * scale;
-  ctx.save();
-  ctx.translate(px, py);
-  ctx.rotate(player.dir);
-  ctx.beginPath();
-  ctx.moveTo(0, -8);
-  ctx.lineTo(6, 7);
-  ctx.lineTo(-6, 7);
-  ctx.closePath();
-  ctx.fillStyle = NEON;
-  ctx.shadowColor = RETRO_GREEN;
-  ctx.shadowBlur = 9;
-  ctx.fill();
-  ctx.restore();
-
-  ctx.restore();
-}
+// --- INIT TREES ---
+placeTrees(17);
 
 // --- RUN LOOP ---
 requestAnimationFrame(gameLoop);
